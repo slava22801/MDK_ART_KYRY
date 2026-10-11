@@ -6,6 +6,8 @@ import {
   useActionData,
   useLoaderData,
   useNavigate,
+  type ActionFunctionArgs,
+  type LoaderFunctionArgs,
 } from "react-router";
 
 import { api } from "@/lib/api";
@@ -51,12 +53,22 @@ function toIsoLocal(date: string, time: string): string {
   return new Date(`${date}T${time}:00`).toISOString();
 }
 
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+/** Дата в формате <input type="date">, собранная из локальных компонент.
+ *  toISOString() здесь нельзя: в UTC+7 между 00:00 и 07:00 дата «уезжает» на день назад. */
+function toLocalDateInput(d: Date): string {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
 function nowPlusHour(): { date: string; time: string } {
   const d = new Date(Date.now() + 60 * 60 * 1000);
   d.setMinutes(0, 0, 0);
   return {
-    date: d.toISOString().slice(0, 10),
-    time: d.toTimeString().slice(0, 5),
+    date: toLocalDateInput(d),
+    time: `${pad2(d.getHours())}:${pad2(d.getMinutes())}`,
   };
 }
 
@@ -80,7 +92,7 @@ function formatTime(time: string): string {
 
 /* ---------- Loader / Action ---------- */
 
-export async function clientLoader({ request }: { request: Request }) {
+export async function clientLoader({ request }: LoaderFunctionArgs) {
   const url = new URL(request.url);
   const date = url.searchParams.get("date");
   const time = url.searchParams.get("time");
@@ -97,7 +109,7 @@ export async function clientLoader({ request }: { request: Request }) {
   }
 }
 
-export async function clientAction({ request }: { request: Request }) {
+export async function clientAction({ request }: ActionFunctionArgs) {
   const form = await request.formData();
   const tableId = Number(form.get("table_id"));
   const startTime = String(form.get("start_time"));
@@ -283,29 +295,53 @@ export function ReservePage() {
     setTime(t);
   }
 
-  // Real available tables from API (if any); fall back to the mock hall
+  // Свободные столы с API. Пока запрос не отработал (нет даты/времени или ошибка) —
+  // список пуст, и схема зала остаётся purely декоративной.
+  const available: Table[] = loaderData.tables;
+
+  // Выбор храним по Table.id, а не по номеру: номера бывают нечисловыми ("VIP-1"),
+  // и Number() по ним даёт NaN. id — единственный стабильный идентификатор для сабмита.
+  const [selectedTableId, setSelectedTableId] = useState<number | null>(null);
+
+  const realByNumber = useMemo(() => {
+    const map = new Map<string, Table>();
+    available.forEach((t) => map.set(String(t.number), t));
+    return map;
+  }, [available]);
+
+  // Столы, которые есть в API, но не нарисованы на схеме (например, VIP-1).
+  const offMapTables = useMemo(
+    () => available.filter((t) => !HALL_TABLES.some((h) => String(h.number) === String(t.number))),
+    [available],
+  );
+
+  // При смене даты/времени/гостей прежний выбор может стать недоступным — сбрасываем его.
+  useEffect(() => {
+    setSelectedTableId(null);
+  }, [loaderData.startTime, guests]);
+
+  const selectedTable: Table | null =
+    available.find((t) => t.id === selectedTableId) ?? null;
+
   const tablesByNumber: Record<number, HallTableState> = useMemo(() => {
     const map: Record<number, HallTableState> = {};
-    HALL_TABLES.forEach((t) => (map[t.number] = t.state));
-    if (loaderData.tables.length > 0) {
-      // Mark all mock tables busy unless explicitly listed as available
-      Object.keys(map).forEach((k) => (map[Number(k)] = "busy"));
-      loaderData.tables.forEach((t) => {
-        const n = Number(t.number);
-        if (n in map) map[n] = "free";
-      });
+    HALL_TABLES.forEach((t) => {
+      map[t.number] = realByNumber.has(String(t.number)) ? "free" : "busy";
+    });
+    if (selectedTable) {
+      const n = Number(selectedTable.number);
+      if (Number.isFinite(n) && map[n] === "free") map[n] = "selected";
     }
     return map;
-  }, [loaderData.tables]);
+  }, [realByNumber, selectedTable]);
 
-  // Default "selected" = first free table, mirroring the design's № 7
-  const selectedNumber = useMemo(() => {
-    const selected = HALL_TABLES.find((t) => t.state === "selected");
-    return selected?.number ?? 4; // table #4 is the cap
-  }, []);
-  const selectedTable = HALL_TABLES.find((t) => t.number === selectedNumber);
+  function toggleTable(table: Table) {
+    setSelectedTableId((cur) => (cur === table.id ? null : table.id));
+  }
 
-  const deposit = 1500 * guests;
+  // Вместимость выбранного стола ограничивает поле гостей.
+  const maxGuests = selectedTable?.capacity ?? 20;
+  const guestsTooMany = guests > maxGuests;
 
   if (!user) {
     return (
@@ -395,7 +431,7 @@ export function ReservePage() {
                   id="reserve-guests"
                   type="number"
                   min={1}
-                  max={20}
+                  max={maxGuests}
                   value={guests}
                   onChange={(e) => setGuests(Number(e.target.value))}
                   required
@@ -453,13 +489,16 @@ export function ReservePage() {
             </div>
 
             <div className="hall-map__tables">
-              {HALL_TABLES.map((t) => (
-                <HallTableView
-                  key={t.number}
-                  table={{ ...t, state: tablesByNumber[t.number] ?? t.state }}
-                  onSelect={() => undefined}
-                />
-              ))}
+              {HALL_TABLES.map((t) => {
+                const real = realByNumber.get(String(t.number));
+                return (
+                  <HallTableView
+                    key={t.number}
+                    table={{ ...t, state: tablesByNumber[t.number] ?? t.state }}
+                    onSelect={() => real && toggleTable(real)}
+                  />
+                );
+              })}
             </div>
 
             <div className="hall-map__entry">
@@ -488,28 +527,61 @@ export function ReservePage() {
           <hr className="divider-h" />
 
           <p className="hall-map__hint">
-            Выбран стол № {selectedNumber} на {guests}{" "}
-            {guests === 1 ? "гостя" : guests < 5 ? "гостей" : "гостей"}. Занятые столики
-            недоступны для выбора; пересекающиеся бронирования не допускаются.
+            {selectedTable
+              ? `Выбран стол № ${selectedTable.number} на ${guests} ${
+                  guests === 1 ? "гостя" : "гостей"
+                }.`
+              : "Выберите свободный столик на схеме."}{" "}
+            Занятые столики недоступны для выбора; пересекающиеся бронирования не допускаются.
           </p>
+
+          {offMapTables.length > 0 && (
+            <div className="sessions-block" style={{ marginTop: 16 }}>
+              <span className="sessions-block__title">Столы вне схемы</span>
+              <div className="sessions-block__chips">
+                {offMapTables.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    className={
+                      selectedTableId === t.id
+                        ? "session-chip session-chip--active"
+                        : "session-chip"
+                    }
+                    onClick={() => toggleTable(t)}
+                  >
+                    № {t.number} · до {t.capacity}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </section>
 
         {/* RIGHT: Summary */}
         <aside className="reserve-summary">
           <article className="summary-card">
             <span className="summary-card__title">Ваш вечер</span>
-            <h3 className="summary-card__heading">Столик № {selectedNumber}</h3>
+            <h3 className="summary-card__heading">
+              {selectedTable ? `Столик № ${selectedTable.number}` : "Столик не выбран"}
+            </h3>
             <p className="summary-card__desc">
-              {selectedTable?.seats === 2
-                ? "У панорамного окна. Тихая зона основного зала, мягкие кресла."
-                : "В центре зала. Подходит для компании или семейного ужина."}{" "}
-              Вместимость — {selectedTable?.seats ?? 2}{" "}
-              {(selectedTable?.seats ?? 2) < 5
-                ? (selectedTable?.seats ?? 2) === 2
-                  ? "гостя"
-                  : "гостя"
-                : "гостей"}
-              .
+              {selectedTable ? (
+                <>
+                  {(selectedTable.capacity ?? 0) <= 2
+                    ? "У панорамного окна. Тихая зона основного зала, мягкие кресла."
+                    : "В центре зала. Подходит для компании или семейного ужина."}{" "}
+                  Вместимость — {selectedTable.capacity}{" "}
+                  {selectedTable.capacity === 1
+                    ? "гость"
+                    : selectedTable.capacity < 5
+                    ? "гостя"
+                    : "гостей"}
+                  .
+                </>
+              ) : (
+                "Выберите свободный столик на схеме зала — мы покажем его вместимость и условия."
+              )}
             </p>
 
             <hr className="divider-h" />
@@ -525,7 +597,7 @@ export function ReservePage() {
               </div>
               <div className="summary-card__param">
                 <dt>Стол</dt>
-                <dd><b>№ {selectedNumber}</b></dd>
+                <dd><b>{selectedTable ? `№ ${selectedTable.number}` : "—"}</b></dd>
               </div>
               <div className="summary-card__param">
                 <dt>Гости</dt>
@@ -537,13 +609,11 @@ export function ReservePage() {
 
             <div className="summary-card__deposit">
               <span className="summary-card__deposit-label">Обязательная предоплата</span>
-              <span className="summary-card__deposit-amount">
-                {deposit.toLocaleString("ru-RU")} ₽
-              </span>
+              <span className="summary-card__deposit-amount">Уточняется при бронировании</span>
               <span className="summary-card__deposit-note">
-                1 500 ₽ × {guests}{" "}
-                {guests === 1 ? "гость" : guests < 5 ? "гостя" : "гостей"}. Учитывается в счёте
-                за визит, это не полная стоимость заказа.
+                Фиксированная сумма предоплаты зависит от стола и гостей. Точную сумму вы увидите
+                на следующем шаге, до списания. Она учитывается в счёте за визит и не является полной
+                стоимостью заказа.
               </span>
             </div>
 
@@ -561,18 +631,36 @@ export function ReservePage() {
             </div>
 
             <Form method="post" className="summary-card__cta-wrap">
-              <input type="hidden" name="table_id" value={selectedNumber} />
+              <input type="hidden" name="table_id" value={selectedTable?.id ?? ""} />
               <input
                 type="hidden"
                 name="start_time"
                 value={loaderData.startTime || toIsoLocal(date, time)}
               />
               <input type="hidden" name="guests_count" value={guests} />
-              <button type="submit" className="summary-card__cta">
+              <button
+                type="submit"
+                className="summary-card__cta"
+                disabled={!selectedTable || guestsTooMany}
+              >
                 <span>Войти и продолжить</span>
                 <ArrowUpRight />
               </button>
             </Form>
+
+            {!selectedTable && !guestsTooMany && (
+              <p className="error" style={{ margin: 0 }}>
+                Выберите свободный столик на схеме, чтобы продолжить.
+              </p>
+            )}
+
+            {guestsTooMany && (
+              <p className="error" style={{ margin: 0 }}>
+                Выбранный столик вмещает до {maxGuests}{" "}
+                {maxGuests === 1 ? "гостя" : "гостей"}. Уменьшите количество гостей или выберите
+                другой стол.
+              </p>
+            )}
 
             {actionData?.error && (
               <p className="error" style={{ margin: 0 }}>{actionData.error}</p>

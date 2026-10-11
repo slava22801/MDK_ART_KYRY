@@ -148,7 +148,7 @@ EXCLUDE USING gist (
 ### Webhooks / Dev
 | Метод | Путь | Описание |
 |---|---|---|
-| `POST` | `/api/v1/webhooks/payment` | Webhook от платёжного шлюза |
+| `POST` | `/api/v1/webhooks/payment` | Webhook от платёжного шлюза. Требует заголовок `X-Signature` (HMAC-SHA256 от тела запроса) |
 | `POST` | `/api/v1/dev/payment/{id}/confirm` | Имитация оплаты (только при `PAYMENT_PROVIDER=stub`) |
 
 ### Admin dashboard
@@ -270,7 +270,7 @@ VITE_API_BASE_URL=http://localhost:8000/api/v1 \
 - CORS — настраивается через `CORS_ORIGINS` (пока дефолт для localhost)
 - Все админские эндпоинты защищены через `require_admin`
 - Файлы в MinIO загружаются с `ACL: public-read` (для простоты; в проде — приватный bucket + presigned URLs на чтение)
-- Подпись вебхуков от провайдера проверяется (для stub — пропускается)
+- Подпись вебхуков проверяется для всех провайдеров, включая stub: HMAC-SHA256 по сырому телу запроса, заголовок `X-Signature: sha256=<hex>`, секрет — `PAYMENT_WEBHOOK_SECRET`. Формула в `app/services/payment_base.py` (`compute_webhook_signature`), сравнение constant-time.
 
 ## Что осталось / TODO
 

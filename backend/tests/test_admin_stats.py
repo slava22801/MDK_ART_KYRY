@@ -34,7 +34,7 @@ async def test_stats_empty(client, admin_token):
 
 @pytest.mark.asyncio
 async def test_stats_counts_confirmed_today(
-    client, three_tables, client_token, admin_token, session_factory
+    client, three_tables, client_token, admin_token, session_factory, signed_webhook
 ):
     start = datetime.now(timezone.utc) + timedelta(days=1)
     start = start.replace(hour=19, minute=0, second=0, microsecond=0)
@@ -48,9 +48,9 @@ async def test_stats_counts_confirmed_today(
     res_id = r.json()["id"]
     payment_id = r.json()["payment_id"]
 
-    await client.post(
-        "/api/v1/webhooks/payment",
-        json={"payment_id": payment_id, "reservation_id": res_id, "status": "succeeded"},
+    await signed_webhook(
+        client,
+        {"payment_id": payment_id, "reservation_id": res_id, "status": "succeeded"},
     )
 
     stats = (

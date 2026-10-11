@@ -19,11 +19,24 @@ export function HydrateFallback() {
 }
 
 export function AdminLayout() {
-  const { user } = useLoaderData() as { user: { name: string | null; email: string } };
+  const data = useLoaderData() as { user?: { name: string | null; email: string } } | undefined;
+  // Страховка на случай, если loader не отработал (например, при серверном рендере):
+  // без неё деструктуризация undefined роняет весь админ-Shell в error boundary.
+  const user = data?.user;
 
   useEffect(() => {
     document.title = "Админ-панель — Арт-Кыры";
   }, []);
+
+  if (!user) {
+    return (
+      <div className="admin">
+        <main className="admin__main">
+          <p className="muted">Загрузка…</p>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="admin">

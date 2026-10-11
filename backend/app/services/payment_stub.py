@@ -5,7 +5,9 @@ from app.services.payment_base import (
     PaymentIntent,
     PaymentProvider,
     WebhookResult,
+    compute_webhook_signature,
     register_provider,
+    verify_webhook_signature,
 )
 
 
@@ -18,7 +20,14 @@ class StubPaymentProvider:
         payment_url = f"{frontend_base_url.rstrip('/')}/payment/{reservation.id}"
         return PaymentIntent(payment_id=payment_id, payment_url=payment_url)
 
+    def sign_webhook(self, raw_body: bytes, secret: str) -> str:
+        """Помогает тестам и локальной отладке сформировать валидную подпись."""
+        return compute_webhook_signature(raw_body, secret)
+
     def verify_webhook(self, raw_body: bytes, signature: str | None) -> WebhookResult:
+        # Раньше подпись просто игнорировалась, и любой, кто знал payment_id
+        # (он предсказуем: stub_<id>_), мог подтвердить бронь без оплаты.
+        verify_webhook_signature(raw_body, signature)
         payload = json.loads(raw_body or b"{}")
         succeeded = payload.get("status") == "succeeded"
         return WebhookResult(

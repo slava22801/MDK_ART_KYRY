@@ -214,6 +214,34 @@ def second_client_token(second_client) -> str:
     return create_access_token(second_client.id, extra={"role": second_client.role.value})
 
 
+@pytest.fixture
+def signed_webhook():
+    """Хелпер для вызова /webhooks/payment с валидной HMAC-подписью.
+
+    Тело сериализуется один раз и отправляется как есть (content=), чтобы подпись
+    считалась ровно по тем байтам, которые ушли на сервер.
+    """
+    import json as _json
+
+    from app.services.payment_base import compute_webhook_signature
+
+    def _send(client, payload: dict, secret: str | None = None):
+        body = _json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        signature = compute_webhook_signature(
+            body, secret or os.environ["PAYMENT_WEBHOOK_SECRET"]
+        )
+        return client.post(
+            "/api/v1/webhooks/payment",
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Signature": signature,
+            },
+        )
+
+    return _send
+
+
 @pytest_asyncio.fixture
 async def three_tables(session) -> list[Table]:
     """3 стола с разной вместимостью."""

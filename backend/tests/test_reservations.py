@@ -156,7 +156,7 @@ async def test_past_time_rejected(client, three_tables, client_token):
 
 
 @pytest.mark.asyncio
-async def test_confirm_payment_via_webhook(client, three_tables, client_token):
+async def test_confirm_payment_via_webhook(client, three_tables, client_token, signed_webhook):
     start = _future_iso()
     create = await client.post(
         URL,
@@ -167,9 +167,9 @@ async def test_confirm_payment_via_webhook(client, three_tables, client_token):
     reservation_id = create.json()["id"]
     payment_id = create.json()["payment_id"]
 
-    r = await client.post(
-        "/api/v1/webhooks/payment",
-        json={"payment_id": payment_id, "reservation_id": reservation_id, "status": "succeeded"},
+    r = await signed_webhook(
+        client,
+        {"payment_id": payment_id, "reservation_id": reservation_id, "status": "succeeded"},
     )
     assert r.status_code == 200
 
@@ -181,7 +181,7 @@ async def test_confirm_payment_via_webhook(client, three_tables, client_token):
 
 
 @pytest.mark.asyncio
-async def test_confirm_payment_idempotent(client, three_tables, client_token):
+async def test_confirm_payment_idempotent(client, three_tables, client_token, signed_webhook):
     """Двойной вебхук с тем же payment_id не ломает ничего."""
     start = _future_iso()
     create = await client.post(
@@ -193,11 +193,47 @@ async def test_confirm_payment_idempotent(client, three_tables, client_token):
     payment_id = create.json()["payment_id"]
 
     for _ in range(2):
-        r = await client.post(
-            "/api/v1/webhooks/payment",
-            json={"payment_id": payment_id, "reservation_id": res_id, "status": "succeeded"},
+        r = await signed_webhook(
+            client,
+            {"payment_id": payment_id, "reservation_id": res_id, "status": "succeeded"},
         )
         assert r.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_webhook_rejects_unsigned_request(
+    client, three_tables, client_token
+):
+    """Без валидной подписи бронь подтвердить нельзя."""
+    start = _future_iso()
+    create = await client.post(
+        URL,
+        json={"table_id": three_tables[0].id, "start_time": start, "guests_count": 2},
+        headers={"Authorization": f"Bearer {client_token}"},
+    )
+    res_id = create.json()["id"]
+    payment_id = create.json()["payment_id"]
+
+    payload = {
+        "payment_id": payment_id,
+        "reservation_id": res_id,
+        "status": "succeeded",
+    }
+    r = await client.post("/api/v1/webhooks/payment", json=payload)
+    assert r.status_code == 400
+
+    r_bad = await client.post(
+        "/api/v1/webhooks/payment",
+        json=payload,
+        headers={"X-Signature": "sha256=deadbeef"},
+    )
+    assert r_bad.status_code == 400
+
+    # Бронь осталась неоплаченной.
+    r_get = await client.get(
+        f"{URL}/{res_id}", headers={"Authorization": f"Bearer {client_token}"}
+    )
+    assert r_get.json()["status"] == "pending_payment"
 
 
 @pytest.mark.asyncio

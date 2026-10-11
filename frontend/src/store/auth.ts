@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 import { api } from "@/lib/api";
+import { ApiError } from "@/lib/http";
 import type { Token, User } from "@/lib/types";
 
 interface AuthState {
@@ -31,6 +32,11 @@ function clearStorage() {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
 }
+
+// Единственный запрос на валидацию сессии: RootLayout и ProfilePage дёргают hydrate()
+// одновременно, и без общего промиса уходят два одинаковых запроса, а любая неудача
+// одного из них выкидывает пользователя на /login при валидном токене.
+let inFlight: Promise<void> | null = null;
 
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
@@ -70,18 +76,39 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   hydrate: async () => {
-    const token = localStorage.getItem(TOKEN_KEY);
-    const raw = localStorage.getItem(USER_KEY);
-    if (!token || !raw) return;
-    try {
-      const user = JSON.parse(raw) as User;
-      set({ token, user });
-      api.auth.me().catch(() => {
+    if (inFlight) return inFlight;
+
+    const run = async () => {
+      const token = localStorage.getItem(TOKEN_KEY);
+      const raw = localStorage.getItem(USER_KEY);
+      if (!token || !raw) return;
+      let user: User;
+      try {
+        user = JSON.parse(raw) as User;
+      } catch {
+        // Битый JSON в хранилище — это локальная проблема, сессию сбрасываем.
         clearStorage();
-        set({ user: null, token: null });
-      });
-    } catch {
-      clearStorage();
-    }
+        return;
+      }
+      // Сначала отдаём пользователю кэш, чтобы UI не мигал «войдите» на каждом входе.
+      set({ token, user });
+      try {
+        await api.auth.me();
+      } catch (err) {
+        // Чистим хранилище только если сервер прямо отверг токен (401/403).
+        // Обрыв сети или 5xx не означает, что сессия протухла — иначе пользователя
+        // выкидывало бы на /login при каждом сетевом сбое.
+        const status = err instanceof ApiError ? err.status : undefined;
+        if (status === 401 || status === 403) {
+          clearStorage();
+          set({ user: null, token: null });
+        }
+      }
+    };
+
+    inFlight = run().finally(() => {
+      inFlight = null;
+    });
+    return inFlight;
   },
 }));

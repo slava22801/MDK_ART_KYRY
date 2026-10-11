@@ -5,6 +5,8 @@ import {
   redirect,
   useLoaderData,
   useRevalidator,
+  type ActionFunctionArgs,
+  type LoaderFunctionArgs,
 } from "react-router";
 
 import { api } from "@/lib/api";
@@ -67,7 +69,7 @@ function statusVariant(status: string): "warn" | "ok" | "mute" {
 
 /* ---------- Loader / Action ---------- */
 
-export async function clientLoader({ params }: { params: { id: string } }) {
+export async function clientLoader({ params }: LoaderFunctionArgs) {
   const id = Number(params.id);
   if (!id) throw redirect("/reserve");
   try {
@@ -78,7 +80,7 @@ export async function clientLoader({ params }: { params: { id: string } }) {
   }
 }
 
-export async function clientAction({ params }: { params: { id: string } }) {
+export async function clientAction({ params }: ActionFunctionArgs) {
   const id = Number(params.id);
   await api.reservations.devConfirmPayment(id);
   return redirect(`/payment/${id}?paid=1`);
@@ -196,7 +198,8 @@ function useCountdown(deadline: string | null) {
 /* ---------- Page ---------- */
 
 export function PaymentPage() {
-  const { reservation } = useLoaderData() as { reservation: Reservation };
+  const data = useLoaderData() as { reservation: Reservation } | undefined;
+  const reservation = data?.reservation ?? null;
   const user = useAuthStore((s) => s.user);
   const revalidator = useRevalidator();
 
@@ -204,19 +207,30 @@ export function PaymentPage() {
     document.title = "Оплата — Арт-Кыры";
   }, []);
 
+  // Поллинг нужен только пока бронь ждёт оплаты: после смены статуса бэкенд её уже не
+  // переведёт, и revalidate просто будет повторно спрашивать то же самое.
   useEffect(() => {
-    if (reservation.status !== "pending_payment") return;
+    if (reservation?.status !== "pending_payment") return;
     const t = setInterval(() => revalidator.revalidate(), 5000);
     return () => clearInterval(t);
-  }, [reservation.status, revalidator]);
+  }, [reservation?.status, revalidator]);
 
-  const countdown = useCountdown(reservation.hold_expires_at);
+  const countdown = useCountdown(reservation?.hold_expires_at ?? null);
 
-  // For editable contact data — pre-fill from user
-  const [name, setName] = useState(user?.name ?? "");
-  const [phone, setPhone] = useState(user?.phone ?? "");
+  // Хуки ниже тоже должны вызываться безусловно.
+  const [name] = useState(user?.name ?? "");
+  const [phone] = useState(user?.phone ?? "");
   const [email] = useState(user?.email ?? "");
   const [agreed, setAgreed] = useState(false);
+
+  // Страховка: без loader'а (или если он не отработал) рендерить нечего.
+  if (!reservation) {
+    return (
+      <div className="inner-shell">
+        <p className="muted">Загрузка брони…</p>
+      </div>
+    );
+  }
 
   const variant = statusVariant(reservation.status);
   const isPending = reservation.status === "pending_payment";
@@ -330,8 +344,7 @@ export function PaymentPage() {
                   id="pay-name"
                   className="form-row__input"
                   value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="Анна Соколова"
+                  readOnly
                 />
               </div>
 
@@ -342,8 +355,7 @@ export function PaymentPage() {
                     id="pay-phone"
                     className="form-row__input"
                     value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
-                    placeholder="+7 (___) ___-__-__"
+                    readOnly
                   />
                 </div>
                 <div className="form-row">
@@ -357,6 +369,11 @@ export function PaymentPage() {
                   />
                 </div>
               </div>
+
+              <p className="panel__hint" style={{ marginTop: 8 }}>
+                Контакты берутся из вашего профиля. Чтобы их изменить,{" "}
+                <Link to="/profile">откройте личный кабинет</Link>.
+              </p>
             </section>
 
             {/* Способ оплаты */}
@@ -460,7 +477,7 @@ export function PaymentPage() {
 
             <div className="payment-summary__deposit-row">
               <span>Предоплата</span>
-              <b>1 500 ₽ × {reservation.guests_count}</b>
+              <b>{reservation.deposit_amount.toLocaleString("ru-RU")} ₽</b>
             </div>
 
             <div className="payment-summary__total">

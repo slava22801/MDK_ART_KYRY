@@ -4,19 +4,22 @@ import { createBrowserRouter, RouterProvider } from "react-router";
 
 import { RootLayout } from "@/routes/root";
 import { HomePage } from "@/routes/home";
-import { MenuPage } from "@/routes/menu";
+import { MenuPage, clientLoader as menuLoader } from "@/routes/menu";
 import { ContactsPage } from "@/routes/contacts";
-import { ReservePage } from "@/routes/reserve";
+import { ReservePage, clientLoader as reserveLoader, clientAction as reserveAction } from "@/routes/reserve";
 import { LoginPage } from "@/routes/login";
 import { RegisterPage } from "@/routes/register";
-import { ProfilePage } from "@/routes/profile";
-import { PaymentPage } from "@/routes/payment";
+import { ProfilePage, clientLoader as profileLoader } from "@/routes/profile";
+import { PaymentPage, clientLoader as paymentLoader, clientAction as paymentAction } from "@/routes/payment";
 
-import { AdminLayout } from "@/routes/admin";
-import { AdminIndex } from "@/routes/admin/index";
-import { AdminTablesPage } from "@/routes/admin/tables";
-import { AdminReservationsPage } from "@/routes/admin/reservations";
-import { AdminMenuPage } from "@/routes/admin/menu";
+import { AdminLayout, clientLoader as adminLoader } from "@/routes/admin";
+import { AdminIndex, clientLoader as adminIndexLoader } from "@/routes/admin/index";
+import { AdminTablesPage, clientLoader as adminTablesLoader } from "@/routes/admin/tables";
+import {
+  AdminReservationsPage,
+  clientLoader as adminReservationsLoader,
+} from "@/routes/admin/reservations";
+import { AdminMenuPage, clientLoader as adminMenuLoader } from "@/routes/admin/menu";
 
 import { RouteErrorBoundary } from "@/components/ErrorBoundary";
 
@@ -29,24 +32,42 @@ const router = createBrowserRouter([
     errorElement: <RouteErrorBoundary />,
     children: [
       { index: true, Component: HomePage },
-      { path: "menu", Component: MenuPage },
+      { path: "menu", Component: MenuPage, loader: menuLoader },
       { path: "contacts", Component: ContactsPage },
-      { path: "reserve", Component: ReservePage, errorElement: <RouteErrorBoundary /> },
+      {
+        path: "reserve",
+        Component: ReservePage,
+        loader: reserveLoader,
+        action: reserveAction,
+        errorElement: <RouteErrorBoundary />,
+      },
       { path: "login", Component: LoginPage },
       { path: "register", Component: RegisterPage },
-      { path: "profile", Component: ProfilePage, errorElement: <RouteErrorBoundary /> },
-      { path: "payment/:id", Component: PaymentPage, errorElement: <RouteErrorBoundary /> },
+      {
+        path: "profile",
+        Component: ProfilePage,
+        loader: profileLoader,
+        errorElement: <RouteErrorBoundary />,
+      },
+      {
+        path: "payment/:id",
+        Component: PaymentPage,
+        loader: paymentLoader,
+        action: paymentAction,
+        errorElement: <RouteErrorBoundary />,
+      },
     ],
   },
   {
     path: "/admin",
     Component: AdminLayout,
+    loader: adminLoader,
     errorElement: <RouteErrorBoundary />,
     children: [
-      { index: true, Component: AdminIndex },
-      { path: "tables", Component: AdminTablesPage },
-      { path: "reservations", Component: AdminReservationsPage },
-      { path: "menu", Component: AdminMenuPage },
+      { index: true, Component: AdminIndex, loader: adminIndexLoader },
+      { path: "tables", Component: AdminTablesPage, loader: adminTablesLoader },
+      { path: "reservations", Component: AdminReservationsPage, loader: adminReservationsLoader },
+      { path: "menu", Component: AdminMenuPage, loader: adminMenuLoader },
     ],
   },
 ]);

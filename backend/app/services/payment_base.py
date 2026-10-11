@@ -1,6 +1,9 @@
+import hashlib
+import hmac
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
+from app.core.config import settings
 from app.models.reservation import Reservation
 
 
@@ -23,6 +26,29 @@ class PaymentProvider(Protocol):
     def create_payment(self, reservation: Reservation, frontend_base_url: str) -> PaymentIntent: ...
 
     def verify_webhook(self, raw_body: bytes, signature: str | None) -> WebhookResult: ...
+
+
+def compute_webhook_signature(raw_body: bytes, secret: str) -> str:
+    """Подпись тела запроса в формате sha256=<hex>."""
+    digest = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+    return f"sha256={digest}"
+
+
+def verify_webhook_signature(
+    raw_body: bytes, signature: str | None, *, secret: str | None = None
+) -> None:
+    """Проверяет HMAC-подпись вебхука. Бросает ValueError при несовпадении.
+
+    Общая точка для всех провайдеров: без неё каждый новый провайдер рискует
+    «забыть» проверку и открыть подтверждение броней без оплаты.
+    """
+    key = secret if secret is not None else settings.payment_webhook_secret
+    if not signature:
+        raise ValueError("missing signature")
+    expected = compute_webhook_signature(raw_body, key)
+    # compare_digest — constant-time, чтобы по времени ответа нельзя было подбирать подпись.
+    if not hmac.compare_digest(expected, signature):
+        raise ValueError("invalid signature")
 
 
 _providers: dict[str, type[PaymentProvider]] = {}
