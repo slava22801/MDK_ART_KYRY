@@ -1,0 +1,174 @@
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: mdk_art_kyry_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # Пробрасываем порт только если задан DB_HOST_PORT, чтобы не конфликтовать
+    # с другими локальными Postgres-ами на 5432. По умолчанию БД доступна
+    # только внутри docker-network (backend, seed).
+    ports:
+      - "${DB_HOST_PORT:-}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mdk_network
+
+  minio:
+    image: ${MINIO_IMAGE:-dappros/minio:RELEASE.2025-09-07T16-13-09Z}
+    container_name: mdk_art_kyry_minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - mdk_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: mdk_art_kyry_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mdk_network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mdk_art_kyry_backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_ACCESS_TTL_MIN: ${JWT_ACCESS_TTL_MIN:-60}
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_BUCKET: ${S3_BUCKET}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:-stub}
+      PAYMENT_WEBHOOK_SECRET: ${PAYMENT_WEBHOOK_SECRET}
+      RESERVATION_HOLD_MIN: ${RESERVATION_HOLD_MIN:-15}
+      RESERVATION_DEFAULT_DURATION_MIN: ${RESERVATION_DEFAULT_DURATION_MIN:-120}
+      DEPOSIT_AMOUNT: ${DEPOSIT_AMOUNT:-500}
+      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost}
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@art-kyry.local}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-admin12345}
+      SEED_ADMIN_NAME: ${SEED_ADMIN_NAME:-Администратор}
+      SEED_TEST_CLIENT_EMAIL: ${SEED_TEST_CLIENT_EMAIL:-client@art-kyry.local}
+      SEED_TEST_CLIENT_PASSWORD: ${SEED_TEST_CLIENT_PASSWORD:-client12345}
+    depends_on:
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    expose:
+      - "8000"
+    networks:
+      - mdk_network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /api/v1
+    container_name: mdk_art_kyry_frontend
+    restart: unless-stopped
+    expose:
+      - "80"
+    depends_on:
+      - backend
+    networks:
+      - mdk_network
+
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    container_name: mdk_art_kyry_nginx
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - mdk_network
+
+  seed:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mdk_art_kyry_seed
+    profiles: ["seed"]
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_ACCESS_TTL_MIN: ${JWT_ACCESS_TTL_MIN:-60}
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_BUCKET: ${S3_BUCKET}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:-stub}
+      PAYMENT_WEBHOOK_SECRET: ${PAYMENT_WEBHOOK_SECRET}
+      RESERVATION_HOLD_MIN: ${RESERVATION_HOLD_MIN:-15}
+      RESERVATION_DEFAULT_DURATION_MIN: ${RESERVATION_DEFAULT_DURATION_MIN:-120}
+      DEPOSIT_AMOUNT: ${DEPOSIT_AMOUNT:-500}
+      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost}
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@art-kyry.local}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-admin12345}
+      SEED_ADMIN_NAME: ${SEED_ADMIN_NAME:-Администратор}
+      SEED_TEST_CLIENT_EMAIL: ${SEED_TEST_CLIENT_EMAIL:-client@art-kyry.local}
+      SEED_TEST_CLIENT_PASSWORD: ${SEED_TEST_CLIENT_PASSWORD:-client12345}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - mdk_network
+    command: ["python", "-m", "app.seed"]
+
+volumes:
+  postgres_data:
+  minio_data:
+  redis_data:
+
+networks:
+  mdk_network:
+    driver: bridge
